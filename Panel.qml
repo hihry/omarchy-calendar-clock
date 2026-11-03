@@ -1442,7 +1442,7 @@ Panel {
                     id: quickAddInput
                     width: parent.width - modeToggleBtn.implicitWidth - quickAddSubmitBtn.implicitWidth - quickAddRow.spacing * 2
                     placeholderText: root.quickAddMode === "gcal"
-                      ? "Add Google Calendar event (e.g. 14:30 Team Call)…"
+                      ? "(10:30-14:00) Event title, or Title (all-day)…"
                       : "Add task for " + root.selectedDateKey + "… (Enter)"
                     foreground: root.contentForeground
                     accent: root.accentColor

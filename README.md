@@ -14,7 +14,12 @@ An enhanced clock and interactive calendar popup plugin for the [Omarchy](https:
   - Click any date in the calendar to inspect its Google Calendar events and local tasks.
   - Check off tasks, click priority badges (`! HIGH`, `• NORM`, `↓ LOW`) to cycle priority, delete tasks, or click Google Calendar events to open them in your browser.
 - **Quick-Add Bar with Priority & Color Swatches**:
-  - Toggle between **`Task`** mode (local tasks with priority & 6 color swatches) and **`GCal`** mode (create events on your primary Google Calendar with Google's 8 event colors and `HH:MM` timed event support).
+  - Toggle between **`Task`** mode (local tasks with priority & 6 color swatches) and **`GCal`** mode (create events on your primary Google Calendar with Google's 8 event colors).
+  - **Smart Time Parsing in `GCal` mode**: Include a time range or start time at the beginning or end of the title (with or without parentheses/brackets) to create a timed event, or omit the time to create an All-Day event:
+    - `(10:30-14:00) Engineering test` or `10:30-14:00 Engineering test` → **10:30–14:00**
+    - `Engineering test (10:30-14:00)` → **10:30–14:00**
+    - `(10:30) Engineering test` or `10:30 Engineering test` → **10:30–11:30** (1-hour default)
+    - `Engineering test` → **All-Day event**
 - **Standalone + Companion Support**:
   - Works **100% standalone** out of the box (stores tasks in `~/.local/state/omarchy/daily-tasks.json`).
   - Automatically syncs live with the companion [**`hihry.tasks`**](https://github.com/hihry/omarchy-daily-tasks) status bar plugin if both are installed.

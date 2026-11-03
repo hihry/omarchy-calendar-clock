@@ -648,22 +648,38 @@ def sync_events(year: int | None = None, month: int | None = None) -> dict:
                         except Exception:
                             continue
                         span_days = max(1, min(31, (e_date - s_date).days))
+                        inferred_start, inferred_end, inferred_title = extract_event_timing(title)
                         for offset in range(span_days):
                             d_cur = s_date + datetime.timedelta(days=offset)
                             d_key = d_cur.isoformat()
-                            events_by_date.setdefault(d_key, []).append({
-                                "id": ev_id,
-                                "title": title,
-                                "date": d_key,
-                                "startTime": "",
-                                "endTime": "",
-                                "allDay": True,
-                                "color": ev_color,
-                                "colorId": color_id,
-                                "calendarName": cal_name,
-                                "htmlLink": html_link,
-                                "source": "gcal",
-                            })
+                            if inferred_start and span_days == 1:
+                                events_by_date.setdefault(d_key, []).append({
+                                    "id": ev_id,
+                                    "title": inferred_title,
+                                    "date": d_key,
+                                    "startTime": inferred_start,
+                                    "endTime": inferred_end,
+                                    "allDay": False,
+                                    "color": ev_color,
+                                    "colorId": color_id,
+                                    "calendarName": cal_name,
+                                    "htmlLink": html_link,
+                                    "source": "gcal",
+                                })
+                            else:
+                                events_by_date.setdefault(d_key, []).append({
+                                    "id": ev_id,
+                                    "title": title,
+                                    "date": d_key,
+                                    "startTime": "",
+                                    "endTime": "",
+                                    "allDay": True,
+                                    "color": ev_color,
+                                    "colorId": color_id,
+                                    "calendarName": cal_name,
+                                    "htmlLink": html_link,
+                                    "source": "gcal",
+                                })
                     elif "dateTime" in start_obj:
                         s_dt = parse_iso_datetime_to_local(start_obj["dateTime"])
                         e_dt = parse_iso_datetime_to_local(end_obj.get("dateTime", ""))
@@ -751,42 +767,153 @@ def sync_events(year: int | None = None, month: int | None = None) -> dict:
     return {"ok": not bool(last_error), "authenticated": authenticated, "error": last_error, "dateCount": len(events_by_date)}
 
 
+def _normalize_hhmm(h_str: str, m_str: str, ampm: str = "") -> str | None:
+    try:
+        h = int(h_str)
+        m = int(m_str)
+    except Exception:
+        return None
+    if m < 0 or m > 59:
+        return None
+    ap = (ampm or "").strip().lower()
+    if ap in ("am", "a"):
+        if h == 12:
+            h = 0
+        elif h < 0 or h > 11:
+            return None
+    elif ap in ("pm", "p"):
+        if h < 12:
+            h += 12
+        elif h != 12:
+            return None
+    else:
+        if h < 0 or h > 23:
+            return None
+    return f"{h:02d}:{m:02d}"
+
+
+def extract_event_timing(raw_title: str, explicit_time: str = "") -> tuple[str, str, str]:
+    """
+    Extracts (start_hhmm, end_hhmm, clean_title) from an event title string.
+    Supports:
+      - "(10:30-14:00) Engineering test"
+      - "[10:30 - 14:00] Engineering test"
+      - "10:30-14:00 Engineering test"
+      - "Engineering test (10:30-14:00)"
+      - "(10:30) Engineering test" or "10:30 Engineering test"
+      - Plain "Engineering test" -> ("", "", "Engineering test") (all-day event)
+    """
+    text = (raw_title or "").strip()
+    if not text:
+        return "", "", ""
+
+    if explicit_time and re.match(r"^\d{1,2}:\d{2}(\s*-\s*\d{1,2}:\d{2})?$", explicit_time.strip()):
+        parts = [p.strip() for p in explicit_time.split("-")]
+        sh, sm = parts[0].split(":")
+        s_norm = _normalize_hhmm(sh, sm)
+        e_norm = ""
+        if len(parts) > 1:
+            eh, em = parts[1].split(":")
+            e_norm = _normalize_hhmm(eh, em) or ""
+        if s_norm:
+            return s_norm, e_norm, text
+
+    time_tok = r"(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)?"
+    sep_tok = r"\s*(?:[-–—]|to)\s*"
+
+    # 1. Time range at the start: "(10:30-14:00) Engineering test" or "10:30-14:00 Engineering test"
+    m = re.match(
+        r"^[\(\[\s]*" + time_tok + sep_tok + time_tok + r"[\)\]\s]*[-:–—]?\s+(.+)$",
+        text,
+    )
+    if m:
+        s_norm = _normalize_hhmm(m.group(1), m.group(2), m.group(3) or "")
+        e_norm = _normalize_hhmm(m.group(4), m.group(5), m.group(6) or "")
+        cleaned = m.group(7).strip()
+        if s_norm and e_norm and cleaned:
+            return s_norm, e_norm, cleaned
+
+    # 2. Time range at the end in brackets/parens: "Engineering test (10:30-14:00)"
+    m = re.match(
+        r"^(.+?)\s*[\(\[]\s*" + time_tok + sep_tok + time_tok + r"\s*[\)\]]\s*$",
+        text,
+    )
+    if m:
+        cleaned = m.group(1).strip()
+        s_norm = _normalize_hhmm(m.group(2), m.group(3), m.group(4) or "")
+        e_norm = _normalize_hhmm(m.group(5), m.group(6), m.group(7) or "")
+        if s_norm and e_norm and cleaned:
+            return s_norm, e_norm, cleaned
+
+    # 3. Single start time at the start: "(10:30) Engineering test" or "10:30 Engineering test"
+    m = re.match(
+        r"^[\(\[\s]*" + time_tok + r"[\)\]\s]*[-:–—]?\s+(.+)$",
+        text,
+    )
+    if m:
+        s_norm = _normalize_hhmm(m.group(1), m.group(2), m.group(3) or "")
+        cleaned = m.group(4).strip()
+        if s_norm and cleaned:
+            return s_norm, "", cleaned
+
+    # 4. Single start time at the end in brackets/parens: "Engineering test (10:30)"
+    m = re.match(
+        r"^(.+?)\s*[\(\[]\s*" + time_tok + r"\s*[\)\]]\s*$",
+        text,
+    )
+    if m:
+        cleaned = m.group(1).strip()
+        s_norm = _normalize_hhmm(m.group(2), m.group(3), m.group(4) or "")
+        if s_norm and cleaned:
+            return s_norm, "", cleaned
+
+    return "", "", text
+
+
+def build_event_start_end(date_key: str, start_time: str, end_time: str) -> tuple[dict, dict]:
+    now_local = datetime.datetime.now().astimezone()
+    tz_offset = now_local.strftime("%z")
+    tz_formatted = f"{tz_offset[:3]}:{tz_offset[3:]}" if len(tz_offset) == 5 else "Z"
+
+    if start_time and re.match(r"^\d{2}:\d{2}$", start_time):
+        y, mo, d = [int(x) for x in date_key.split("-")]
+        sh, sm = [int(x) for x in start_time.split(":")]
+        start_dt = datetime.datetime(y, mo, d, sh, sm, 0, tzinfo=now_local.tzinfo)
+        if end_time and re.match(r"^\d{2}:\d{2}$", end_time):
+            eh, em = [int(x) for x in end_time.split(":")]
+            end_dt = datetime.datetime(y, mo, d, eh, em, 0, tzinfo=now_local.tzinfo)
+            if end_dt <= start_dt:
+                # Overnight span (e.g. 22:00-01:00) advances end_dt to the next day
+                end_dt += datetime.timedelta(days=1)
+        else:
+            end_dt = start_dt + datetime.timedelta(hours=1)
+        return (
+            {"dateTime": start_dt.strftime(f"%Y-%m-%dT%H:%M:00{tz_formatted}")},
+            {"dateTime": end_dt.strftime(f"%Y-%m-%dT%H:%M:00{tz_formatted}")},
+        )
+
+    s_date = datetime.date.fromisoformat(date_key)
+    e_date = s_date + datetime.timedelta(days=1)
+    return {"date": s_date.isoformat()}, {"date": e_date.isoformat()}
+
+
 def add_google_event(date_key: str, title: str, time_str: str = "", color_id: str = "7") -> dict:
-    clean_title = (title or "").strip()
+    start_time, end_time, clean_title = extract_event_timing(title, time_str)
     if not clean_title:
         return {"ok": False, "error": "Event title is empty"}
-
-    if not time_str:
-        m = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)\s+(.+)$", clean_title)
-        if m:
-            time_str = f"{int(m.group(1)):02d}:{m.group(2)}"
-            clean_title = m.group(3).strip()
 
     try:
         access_token = get_valid_access_token()
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-    now_local = datetime.datetime.now().astimezone()
-    tz_offset = now_local.strftime("%z")
-    tz_formatted = f"{tz_offset[:3]}:{tz_offset[3:]}" if len(tz_offset) == 5 else "Z"
-
     body: dict = {"summary": clean_title}
     if color_id and color_id in DEFAULT_GCAL_PALETTE:
         body["colorId"] = str(color_id)
 
-    if time_str and re.match(r"^\d{2}:\d{2}$", time_str):
-        y, mo, d = [int(x) for x in date_key.split("-")]
-        hh, mm = [int(x) for x in time_str.split(":")]
-        start_dt = datetime.datetime(y, mo, d, hh, mm, 0, tzinfo=now_local.tzinfo)
-        end_dt = start_dt + datetime.timedelta(hours=1)
-        body["start"] = {"dateTime": start_dt.strftime(f"%Y-%m-%dT%H:%M:00{tz_formatted}")}
-        body["end"] = {"dateTime": end_dt.strftime(f"%Y-%m-%dT%H:%M:00{tz_formatted}")}
-    else:
-        s_date = datetime.date.fromisoformat(date_key)
-        e_date = s_date + datetime.timedelta(days=1)
-        body["start"] = {"date": s_date.isoformat()}
-        body["end"] = {"date": e_date.isoformat()}
+    start_obj, end_obj = build_event_start_end(date_key, start_time, end_time)
+    body["start"] = start_obj
+    body["end"] = end_obj
 
     try:
         created = http_json(
